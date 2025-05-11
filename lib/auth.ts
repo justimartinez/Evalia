@@ -1,7 +1,8 @@
 import type { NextAuthOptions } from "next-auth"
 import CredentialsProvider from "next-auth/providers/credentials"
-import { compare } from "bcryptjs" // Cambiado de bcrypt a bcryptjs
+import { compare } from "bcryptjs"
 import { executeQuery } from "./db"
+import { syncUserToNeon, getUserByEmail } from "./neon-auth-integration"
 
 export const authOptions: NextAuthOptions = {
   pages: {
@@ -24,7 +25,7 @@ export const authOptions: NextAuthOptions = {
         }
 
         try {
-          // Buscar usuario por email
+          // Buscar usuario por email en la base de datos Evalia BD
           const users = await executeQuery(
             'SELECT id, name, email, password, role, company_id, image FROM "Evalia BD".users WHERE email = $1',
             [credentials.email],
@@ -43,10 +44,28 @@ export const authOptions: NextAuthOptions = {
             return null
           }
 
-          // Actualizar último login
+          // Sincronizar con Neon Auth
+          try {
+            await syncUserToNeon({
+              id: user.id.toString(),
+              email: user.email,
+              name: user.name,
+              role: user.role,
+              metadata: {
+                companyId: user.company_id,
+                lastLogin: new Date().toISOString(),
+              },
+            })
+          } catch (syncError) {
+            console.warn("Error al sincronizar con Neon Auth:", syncError)
+            // Continuar incluso si la sincronización falla
+          }
+
+          // Actualizar último login en Evalia BD
           try {
             await executeQuery('UPDATE "Evalia BD".users SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [user.id])
-          } catch (error) {
+          } catch (updateError) {
+            console.warn("Error al actualizar último login:", updateError)
             // Continuar sin actualizar el último login si hay error
           }
 
@@ -55,7 +74,7 @@ export const authOptions: NextAuthOptions = {
             name: user.name,
             email: user.email,
             role: user.role,
-            companyId: user.company_id, // Cambiado de company_id a companyId para seguir la convención de camelCase
+            companyId: user.company_id,
             image: user.image,
           }
         } catch (error) {
@@ -70,7 +89,7 @@ export const authOptions: NextAuthOptions = {
       if (user) {
         token.id = user.id
         token.role = user.role
-        token.companyId = user.companyId // Cambiado de company_id a companyId
+        token.companyId = user.companyId
       }
       return token
     },
@@ -78,7 +97,24 @@ export const authOptions: NextAuthOptions = {
       if (session.user) {
         session.user.id = token.id
         session.user.role = token.role
-        session.user.companyId = token.companyId // Cambiado de company_id a companyId
+        session.user.companyId = token.companyId
+
+        // Opcionalmente, obtener datos actualizados de Neon Auth
+        try {
+          if (session.user.email) {
+            const neonUser = await getUserByEmail(session.user.email)
+            if (neonUser && neonUser.metadata) {
+              // Actualizar datos de sesión con información de Neon Auth
+              const metadata = typeof neonUser.metadata === "string" ? JSON.parse(neonUser.metadata) : neonUser.metadata
+
+              // Añadir cualquier dato adicional del usuario desde Neon Auth
+              session.user.neonSynced = true
+              session.user.lastSyncedAt = neonUser.updated_at
+            }
+          }
+        } catch (error) {
+          console.warn("Error al obtener datos actualizados de Neon Auth:", error)
+        }
       }
       return session
     },
