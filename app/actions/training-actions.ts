@@ -70,16 +70,41 @@ export async function getTrainings() {
     query += ` ORDER BY t.created_at DESC`
 
     console.log("Query de getTrainings:", query)
-    const trainings = await sql.unsafe(query)
-    console.log("Trainings encontrados:", trainings.length)
 
-    return trainings.map((training) => ({
-      ...training,
-      content_count: Number.parseInt(training.content_count) || 0,
-      question_count: Number.parseInt(training.question_count) || 0,
-      assigned_users: Number.parseInt(training.assigned_users) || 0,
-      completed_users: Number.parseInt(training.completed_users) || 0,
-    }))
+    // Usar try/catch específico para la consulta SQL
+    try {
+      const trainings = await sql.unsafe(query)
+      console.log("Trainings encontrados:", trainings ? trainings.length : 0)
+
+      // Verificar si trainings es un array antes de usar map
+      if (!Array.isArray(trainings)) {
+        console.error("El resultado de la consulta no es un array:", trainings)
+        return [] // Devolver un array vacío como fallback
+      }
+
+      return trainings.map((training) => ({
+        ...training,
+        content_count: Number.parseInt(training.content_count) || 0,
+        question_count: Number.parseInt(training.question_count) || 0,
+        assigned_users: Number.parseInt(training.assigned_users) || 0,
+        completed_users: Number.parseInt(training.completed_users) || 0,
+      }))
+    } catch (sqlError) {
+      console.error("Error específico en la consulta SQL:", sqlError)
+      console.error(
+        "Detalles del error SQL:",
+        JSON.stringify(
+          {
+            message: sqlError.message,
+            code: sqlError.code,
+            query: query.substring(0, 100) + "...",
+          },
+          null,
+          2,
+        ),
+      )
+      return []
+    }
   } catch (error) {
     console.error("Error al obtener capacitaciones:", error)
     return []
@@ -121,53 +146,62 @@ export async function getTrainingById(id) {
     }
 
     console.log("Query de getTrainingById:", trainingQuery)
-    const trainingResult = await sql.unsafe(trainingQuery)
-    console.log("Training encontrado:", trainingResult.length > 0)
 
-    if (trainingResult.length === 0) {
+    // Usar try/catch específico para la consulta SQL
+    try {
+      const trainingResult = await sql.unsafe(trainingQuery)
+      console.log("Training encontrado:", trainingResult && trainingResult.length > 0)
+
+      if (!Array.isArray(trainingResult) || trainingResult.length === 0) {
+        return null
+      }
+
+      const training = trainingResult[0]
+
+      // Obtener contenido de la capacitación
+      const contentResult = await sql`
+        SELECT *
+        FROM "Evalia BD".training_content
+        WHERE training_id = ${numericId}
+        ORDER BY order_index
+      `
+
+      // Obtener preguntas de la capacitación
+      const questionsResult = await sql`
+        SELECT *
+        FROM "Evalia BD".training_questions
+        WHERE training_id = ${numericId}
+        ORDER BY order_index
+      `
+
+      // Obtener usuarios asignados a la capacitación
+      const userTrainingsResult = await sql`
+        SELECT ta.*, u.name as user_name, u.email as user_email, 
+          (SELECT d.name FROM "Evalia BD".departments d JOIN "Evalia BD".user_departments ud ON d.id = ud.department_id WHERE ud.user_id = u.id LIMIT 1) as department
+        FROM "Evalia BD".training_assignments ta
+        JOIN "Evalia BD".users u ON ta.user_id = u.id
+        WHERE ta.training_id = ${numericId}
+        ORDER BY ta.created_at DESC
+      `
+
+      return {
+        ...training,
+        content: Array.isArray(contentResult) ? contentResult : [],
+        questions: Array.isArray(questionsResult)
+          ? questionsResult.map((q) => ({
+              ...q,
+              options: q.options || [],
+            }))
+          : [],
+        user_trainings: Array.isArray(userTrainingsResult) ? userTrainingsResult : [],
+        content_count: Number.parseInt(training.content_count) || 0,
+        question_count: Number.parseInt(training.question_count) || 0,
+        assigned_users: Number.parseInt(training.assigned_users) || 0,
+        completed_users: Number.parseInt(training.completed_users) || 0,
+      }
+    } catch (sqlError) {
+      console.error("Error específico en la consulta SQL:", sqlError)
       return null
-    }
-
-    const training = trainingResult[0]
-
-    // Obtener contenido de la capacitación
-    const contentResult = await sql`
-      SELECT *
-      FROM "Evalia BD".training_content
-      WHERE training_id = ${numericId}
-      ORDER BY order_index
-    `
-
-    // Obtener preguntas de la capacitación
-    const questionsResult = await sql`
-      SELECT *
-      FROM "Evalia BD".training_questions
-      WHERE training_id = ${numericId}
-      ORDER BY order_index
-    `
-
-    // Obtener usuarios asignados a la capacitación
-    const userTrainingsResult = await sql`
-      SELECT ta.*, u.name as user_name, u.email as user_email, 
-        (SELECT d.name FROM "Evalia BD".departments d JOIN "Evalia BD".user_departments ud ON d.id = ud.department_id WHERE ud.user_id = u.id LIMIT 1) as department
-      FROM "Evalia BD".training_assignments ta
-      JOIN "Evalia BD".users u ON ta.user_id = u.id
-      WHERE ta.training_id = ${numericId}
-      ORDER BY ta.created_at DESC
-    `
-
-    return {
-      ...training,
-      content: contentResult,
-      questions: questionsResult.map((q) => ({
-        ...q,
-        options: q.options || [],
-      })),
-      user_trainings: userTrainingsResult,
-      content_count: Number.parseInt(training.content_count) || 0,
-      question_count: Number.parseInt(training.question_count) || 0,
-      assigned_users: Number.parseInt(training.assigned_users) || 0,
-      completed_users: Number.parseInt(training.completed_users) || 0,
     }
   } catch (error) {
     console.error("Error al obtener capacitación:", error)
